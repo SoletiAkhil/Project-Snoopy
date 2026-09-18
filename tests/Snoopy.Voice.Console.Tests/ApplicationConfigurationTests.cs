@@ -163,8 +163,25 @@ public sealed class ApplicationConfigurationTests
         using var provider = ApplicationServices.CreateProvider(Load(ValidEnvironment()), new StringWriter());
         Assert.IsType<AzureOpenAILanguageModelClient>(provider.GetRequiredService<ILanguageModelClient>());
         Assert.IsType<ConversationService>(provider.GetRequiredService<IConversationService>());
+        Assert.IsType<InMemoryConversationHistory>(provider.GetRequiredService<IConversationHistory>());
+        Assert.Same(provider.GetRequiredService<IConversationHistory>(), provider.GetRequiredService<IConversationHistory>());
         Assert.NotNull(provider.GetRequiredService<VoiceConversationApplication>());
         Assert.Same(provider.GetRequiredService<ILanguageModelClient>(), provider.GetRequiredService<ILanguageModelClient>());
+    }
+
+    [Fact]
+    public async Task RegisteredHistoryIsSharedWithConversationServiceButNotOtherSessions()
+    {
+        using var provider = ApplicationServices.CreateProvider(Load(ValidEnvironment()), new StringWriter());
+        using var otherSession = ApplicationServices.CreateProvider(Load(ValidEnvironment()), new StringWriter());
+        var history = provider.GetRequiredService<IConversationHistory>();
+        await history.AddTurnAsync(new("My name is Akhil.", "Hello Akhil."));
+
+        Assert.NotSame(history, otherSession.GetRequiredService<IConversationHistory>());
+        Assert.Empty(await otherSession.GetRequiredService<IConversationHistory>().GetTurnsAsync());
+
+        await provider.GetRequiredService<IConversationService>().ClearAsync();
+        Assert.Empty(await history.GetTurnsAsync());
     }
 
     private static Dictionary<string, string?> ValidEnvironment() => new()

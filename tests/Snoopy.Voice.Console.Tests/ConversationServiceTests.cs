@@ -16,7 +16,7 @@ public sealed class ConversationServiceTests
             "You told me your name is Akhil."
         ]);
         var model = new FakeLanguageModel { Handler = (_, _) => Task.FromResult(replies.Dequeue()) };
-        IConversationService service = new ConversationService(model, options);
+        IConversationService service = CreateService(model, options);
 
         Assert.Equal("Nice to meet you, Akhil.", await service.ReplyAsync("My name is Akhil."));
         Assert.Equal("Your name is Akhil.", await service.ReplyAsync("What is my name?"));
@@ -45,7 +45,7 @@ public sealed class ConversationServiceTests
         var options = Options(systemPrompt: "  Follow this configured prompt exactly.  ");
         const string reply = "  A precise answer.\r\n";
         var model = new FakeLanguageModel { Handler = (_, _) => Task.FromResult(reply) };
-        var service = new ConversationService(model, options);
+        var service = CreateService(model, options);
 
         Assert.Equal(reply, await service.ReplyAsync(" \t A question. \r\n"));
         await service.ReplyAsync("Follow up.");
@@ -65,8 +65,8 @@ public sealed class ConversationServiceTests
     {
         var model = new FakeLanguageModel();
         var options = Options();
-        var first = new ConversationService(model, options);
-        var second = new ConversationService(model, options);
+        var first = CreateService(model, options);
+        var second = CreateService(model, options);
 
         await first.ReplyAsync("Only in the first session.");
         await second.ReplyAsync("Only in the second session.");
@@ -93,7 +93,7 @@ public sealed class ConversationServiceTests
         {
             Handler = (messages, _) => Task.FromResult($"Answer to {messages[^1].Text}")
         };
-        var service = new ConversationService(model, options);
+        var service = CreateService(model, options);
         var totalTurns = capacity + 3;
 
         for (var turn = 1; turn <= totalTurns; turn++)
@@ -149,7 +149,7 @@ public sealed class ConversationServiceTests
         var options = Options(systemPrompt: new string('s', 100));
         var replies = new Queue<string>([new string('A', 300), new string('B', 500), "Done."]);
         var model = new FakeLanguageModel { Handler = (_, _) => Task.FromResult(replies.Dequeue()) };
-        var service = new ConversationService(model, options);
+        var service = CreateService(model, options);
 
         await service.ReplyAsync(new string('a', 100));
         await service.ReplyAsync(new string('b', 100));
@@ -259,7 +259,7 @@ public sealed class ConversationServiceTests
     public async Task InputAtLimitIsAcceptedAfterTrimming()
     {
         var model = new FakeLanguageModel();
-        var service = new ConversationService(model, Options(maxInputCharacters: 4));
+        var service = CreateService(model, Options(maxInputCharacters: 4));
 
         Assert.Equal("Answer.", await service.ReplyAsync(" \tword\r\n "));
 
@@ -375,7 +375,7 @@ public sealed class ConversationServiceTests
                 return Task.FromResult("Answer.");
             }
         };
-        var service = new ConversationService(model, options);
+        var service = CreateService(model, options);
 
         await service.ReplyAsync("first");
         await service.ReplyAsync("second");
@@ -415,7 +415,7 @@ public sealed class ConversationServiceTests
                 return Task.FromResult("Second answer.");
             }
         };
-        var service = new ConversationService(model, options);
+        var service = CreateService(model, options);
         using var cancellation = new CancellationTokenSource();
 
         var first = service.ReplyAsync("first");
@@ -453,8 +453,11 @@ public sealed class ConversationServiceTests
     [Fact]
     public void NullDependenciesAreRejected()
     {
-        Assert.Throws<ArgumentNullException>(() => new ConversationService(null!, Options()));
-        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), null!));
+        var options = Options();
+        var history = new InMemoryConversationHistory(options);
+        Assert.Throws<ArgumentNullException>(() => new ConversationService(null!, options, history));
+        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), null!, history));
+        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), options, null!));
     }
 
     [Fact]
@@ -462,8 +465,117 @@ public sealed class ConversationServiceTests
     {
         var options = Options(systemPrompt: new string('s', 100), maxInputCharacters: 925);
 
-        Assert.Throws<ArgumentException>(() => new ConversationService(new FakeLanguageModel(), options));
+        Assert.Throws<ArgumentException>(() =>
+            new ConversationService(new FakeLanguageModel(), options, new InMemoryConversationHistory(Options())));
     }
+
+    [Fact]
+    public async Task ClearRemovesPriorTurnsWithoutChangingSystemPromptOrCallingModel()
+    {
+        var (service, model, options) = await SeedHistoryAsync();
+        var callsBeforeClear = model.Requests.Count;
+
+        await service.ClearAsync();
+        await service.ClearAsync();
+        Assert.Equal(callsBeforeClear, model.Requests.Count);
+        await service.ReplyAsync("What is my name?");
+
+        Assert.Equal<ConversationMessage>(
+        [
+            new(ConversationRole.System, options.SystemPrompt),
+            new(ConversationRole.User, "What is my name?")
+        ], model.Requests[^1]);
+    }
+
+    [Fact]
+    public async Task CanceledClearLeavesHistoryUnchanged()
+    {
+        var (service, model, options) = await SeedHistoryAsync();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ClearAsync(cancellation.Token));
+        await service.ReplyAsync("retry");
+
+        AssertOriginalHistory(model.Requests[^1], options, "retry");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ClearWaitsForInFlightReplyAndCanceledClearDoesNotEraseIt(bool cancelClear)
+    {
+        var options = Options();
+        var response = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var model = new FakeLanguageModel
+        {
+            Handler = (_, _) =>
+            {
+                started.TrySetResult();
+                return response.Task;
+            }
+        };
+        var service = CreateService(model, options);
+        using var cancellation = new CancellationTokenSource();
+        var reply = service.ReplyAsync("My name is Akhil.");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var clear = service.ClearAsync(cancellation.Token);
+        try
+        {
+            Assert.False(clear.IsCompleted);
+            if (cancelClear)
+            {
+                cancellation.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => clear.WaitAsync(TimeSpan.FromSeconds(5)));
+            }
+        }
+        finally
+        {
+            response.TrySetResult("Hello Akhil.");
+        }
+        await reply.WaitAsync(TimeSpan.FromSeconds(5));
+        if (!cancelClear)
+        {
+            await clear.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        model.Handler = (_, _) => Task.FromResult("Next reply.");
+        await service.ReplyAsync("What is my name?");
+        Assert.Equal(cancelClear ? 4 : 2, model.Requests[^1].Count);
+        Assert.Equal(options.SystemPrompt, model.Requests[^1][0].Text);
+        Assert.Equal("What is my name?", model.Requests[^1][^1].Text);
+    }
+
+    [Fact]
+    public async Task ServiceUsesInjectedHistoryForReadAddAndClear()
+    {
+        var options = Options();
+        var history = new RecordingHistory();
+        var model = new FakeLanguageModel();
+        var service = new ConversationService(model, options, history);
+        using var cancellation = new CancellationTokenSource();
+
+        await service.ReplyAsync(" next ", cancellation.Token);
+
+        Assert.Equal(4, history.PendingCharacters);
+        Assert.Equal(cancellation.Token, history.LastToken);
+        Assert.Equal<ConversationMessage>(
+        [
+            new(ConversationRole.System, options.SystemPrompt),
+            new(ConversationRole.User, "Previous user"),
+            new(ConversationRole.Assistant, "Previous assistant"),
+            new(ConversationRole.User, "next")
+        ], Assert.Single(model.Requests));
+        Assert.Equal(new("next", "Answer."), Assert.Single(history.Added));
+
+        await service.ClearAsync(cancellation.Token);
+        Assert.True(history.Cleared);
+        Assert.Equal(cancellation.Token, history.LastToken);
+    }
+
+    private static ConversationService CreateService(ILanguageModelClient model, SnoopyOptions options) =>
+        new(model, options, new InMemoryConversationHistory(options));
 
     private static SnoopyOptions Options(
         int maxHistoryTurns = 12, int maxInputCharacters = 924, string systemPrompt = "You are Snoopy.") => new()
@@ -482,7 +594,7 @@ public sealed class ConversationServiceTests
         {
             Handler = (messages, _) => Task.FromResult(messages[^1].Text.ToUpperInvariant())
         };
-        var service = new ConversationService(model, options);
+        var service = CreateService(model, options);
         await service.ReplyAsync(new string('a', 200));
         await service.ReplyAsync(new string('b', 200));
         return (service, model, options);
@@ -518,6 +630,37 @@ public sealed class ConversationServiceTests
                 Assert.Equal(ConversationRole.Assistant, request[index + 1].Role);
             }
         });
+    }
+
+    private sealed class RecordingHistory : IConversationHistory
+    {
+        public int PendingCharacters { get; private set; }
+        public CancellationToken LastToken { get; private set; }
+        public List<ConversationTurn> Added { get; } = [];
+        public bool Cleared { get; private set; }
+
+        public Task<IReadOnlyList<ConversationTurn>> GetTurnsAsync(
+            int pendingInputCharacters = 0, CancellationToken cancellationToken = default)
+        {
+            PendingCharacters = pendingInputCharacters;
+            LastToken = cancellationToken;
+            return Task.FromResult<IReadOnlyList<ConversationTurn>>(
+                new ConversationTurn[] { new("Previous user", "Previous assistant") });
+        }
+
+        public Task AddTurnAsync(ConversationTurn turn, CancellationToken cancellationToken = default)
+        {
+            Added.Add(turn);
+            LastToken = cancellationToken;
+            return Task.CompletedTask;
+        }
+
+        public Task ClearAsync(CancellationToken cancellationToken = default)
+        {
+            Cleared = true;
+            LastToken = cancellationToken;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeLanguageModel : ILanguageModelClient

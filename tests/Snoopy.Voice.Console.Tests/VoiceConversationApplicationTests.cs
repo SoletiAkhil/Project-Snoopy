@@ -294,9 +294,127 @@ public sealed class VoiceConversationApplicationTests
         }
     }
 
+    [Theory]
+    [InlineData("reset conversation")]
+    [InlineData("New conversation.")]
+    public async Task ResetClearsContextWithoutSendingCommandOrConfirmationToModel(string command)
+    {
+        var stt = new ScriptedRecognition(
+            Session.Saying("My name is Akhil."), Session.Saying("What is my name?"),
+            Session.Saying(command), Session.Saying("What is my name?"), Session.Saying("goodbye"));
+        var model = new FakeModel
+        {
+            Handler = (messages, _) =>
+            {
+                Assert.False(stt.MicrophoneOpen);
+                var nameKnown = messages.Any(message => message.Text == "My name is Akhil.");
+                return Task.FromResult(nameKnown ? "Your name is Akhil." : "I don't know your name.");
+            }
+        };
+        var tts = new FakeSynthesis
+        {
+            Handler = (_, _) =>
+            {
+                Assert.False(stt.MicrophoneOpen);
+                return Task.CompletedTask;
+            }
+        };
+        var output = new StringWriter();
+        await Create(stt, tts, model, output).RunAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(3, model.Requests.Count);
+        Assert.Equal(4, model.Requests[1].Count);
+        Assert.Equal<ConversationMessage>(
+        [
+            new(ConversationRole.System, SnoopyOptions.DefaultSystemPrompt),
+            new(ConversationRole.User, "What is my name?")
+        ], model.Requests[2]);
+        Assert.Equal(
+        [
+            "Your name is Akhil.", "Your name is Akhil.", VoiceConversationApplication.ConversationReset,
+            "I don't know your name.", VoiceConversationApplication.Goodbye
+        ], tts.Spoken);
+        Assert.Contains($"Snoopy: {VoiceConversationApplication.ConversationReset}", output.ToString());
+    }
+
+    [Fact]
+    public async Task RepeatedResetsOfEmptyConversationDoNotCallModel()
+    {
+        var stt = new ScriptedRecognition(
+            Session.Saying("reset conversation"), Session.Saying("new conversation"), Session.Saying("exit"));
+        var model = new FakeModel();
+        var tts = new FakeSynthesis();
+        await Create(stt, tts, model).RunAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(model.Requests);
+        Assert.Equal(
+        [
+            VoiceConversationApplication.ConversationReset,
+            VoiceConversationApplication.ConversationReset,
+            VoiceConversationApplication.Goodbye
+        ], tts.Spoken);
+    }
+
+    [Fact]
+    public async Task FailedResetConfirmationPlaybackDoesNotRestoreHistoryOrStopListening()
+    {
+        var stt = new ScriptedRecognition(
+            Session.Saying("My name is Akhil."), Session.Saying("reset conversation"),
+            Session.Saying("What is my name?"), Session.Saying("exit"));
+        var model = new FakeModel();
+        var tts = new FakeSynthesis
+        {
+            Handler = (text, _) => text == VoiceConversationApplication.ConversationReset
+                ? throw new SpeechServiceException("Speaker unavailable.")
+                : Task.CompletedTask
+        };
+        var output = new StringWriter();
+        await Create(stt, tts, model, output).RunAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(2, model.Requests.Count);
+        Assert.Equal(2, model.Requests[1].Count);
+        Assert.Equal("What is my name?", model.Requests[1][^1].Text);
+        Assert.Contains("Speaker unavailable.", output.ToString());
+        Assert.Equal(4, stt.SessionsStarted);
+    }
+
+    [Fact]
+    public async Task CancellationDuringClearDoesNotAnnounceSuccessOrContinueListening()
+    {
+        using var shutdown = new CancellationTokenSource();
+        var stt = new ScriptedRecognition(Session.Saying("reset conversation"));
+        var tts = new FakeSynthesis();
+        var conversation = new BlockingClearConversation();
+        var output = new StringWriter();
+        var run = new VoiceConversationApplication(stt, tts, conversation, output).RunAsync(shutdown.Token);
+        await conversation.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await shutdown.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Empty(tts.Spoken);
+        Assert.DoesNotContain(VoiceConversationApplication.ConversationReset, output.ToString());
+        Assert.Equal(1, stt.SessionsStarted);
+        Assert.False(stt.MicrophoneOpen);
+    }
+
     private static VoiceConversationApplication Create(
-        ScriptedRecognition stt, FakeSynthesis tts, FakeModel model, TextWriter? output = null) =>
-        new(stt, tts, new ConversationService(model, new SnoopyOptions()), output ?? new StringWriter());
+        ScriptedRecognition stt, FakeSynthesis tts, FakeModel model, TextWriter? output = null)
+    {
+        var options = new SnoopyOptions();
+        return new(stt, tts, new ConversationService(model, options, new InMemoryConversationHistory(options)),
+            output ?? new StringWriter());
+    }
+
+    private sealed class BlockingClearConversation : IConversationService
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<string> ReplyAsync(string userText, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("A reset must not request a model reply.");
+
+        public async Task ClearAsync(CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+    }
 
     private sealed class Session
     {

@@ -4,14 +4,7 @@ public static class ExitCommands
 {
     public static bool IsExit(string? text)
     {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return false;
-        }
-
-        var words = new string(text.Select(character => char.IsPunctuation(character) ? ' ' : character)
-                .ToArray())
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var words = ConversationCommands.GetWords(text);
 
         return words.Length switch
         {

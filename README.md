@@ -13,6 +13,10 @@ Running without arguments starts a conversation. The original working STT,
 TTS and echo services/menu are preserved: use **`--speech-tests`** to run them
 independently, without Azure OpenAI configuration.
 
+V0.2 separates session-history storage from conversation orchestration and adds
+voice commands to start a fresh conversation. Speech and model integrations,
+configuration and existing history limits are unchanged.
+
 There is no MCP, tool calling, agent framework, persistent memory, database,
 web API, device control or Raspberry Pi integration in this milestone.
 
@@ -248,6 +252,13 @@ ignore case and recognition punctuation. Ordinary sentences containing one of
 these words do not exit. **Ctrl+C** cancels STT, an LLM call or TTS and shuts down.
 There is no simultaneous listening/barge-in during LLM processing or playback.
 
+Say **reset conversation** or **new conversation** to clear this session's history.
+Snoopy replies, "Sure. I've started a new conversation.", then listens again.
+Neither the command nor its confirmation is sent to the LLM or stored in history.
+Matching ignores case and recognition punctuation, but only these complete
+commands trigger a reset; a question containing the words does not.
+Reset does not exit, change configuration or modify the system prompt.
+
 Known STT failures retry after a one-second delay (Ctrl+C always exits). The
 official model SDK makes bounded transient retries, within a total configured
 request deadline. A failed model turn displays a sanitized diagnostic and speaks
@@ -262,6 +273,15 @@ Each session starts fresh. History contains complete user/assistant pairs,
 only committed after a successful model response. Failed/canceled model calls
 and spoken error fallbacks are not stored. A displayed answer remains in history
 even if its audio playback fails.
+
+`ConversationService` depends on `IConversationHistory` for reading snapshots,
+adding complete turns and clearing history. `InMemoryConversationHistory` owns
+the stored turns and limits, and DI registers one instance per application/session.
+It is not static, shared across separate application instances or persisted.
+Request snapshots reserve room for pending input without modifying stored history.
+`ReplyAsync` and `ClearAsync` use the same existing session semaphore, so a reset
+waits for an in-flight turn instead of allowing its reply to repopulate cleared
+history. Individual in-memory history operations are also synchronized.
 
 The oldest **whole pairs** are dropped to meet both the turn-count cap and the
 character budget. The budget includes the system prompt and pending input for
@@ -285,17 +305,24 @@ for processing and are subject to those services' data-handling policies.
    generated response is both displayed and spoken before listening resumes.
 3. Say "My name is Akhil", then "What is my name?" Verify the second response
    uses the context.
-4. Try silence or unclear speech: no empty LLM turn should be sent.
-5. Say "Goodbye Snoopy" and verify a spoken farewell and clean exit.
-6. In separate runs, press Ctrl+C during listening, an LLM request, and playback.
-7. With deliberately invalid local LLM configuration, verify safe errors and
+4. Say "reset conversation" and expect "Sure. I've started a new conversation."
+   Ask "What is my name?" again. The model should no longer have the previous
+   turns. Reset deliberately preserves the system prompt, including any facts
+   you may have explicitly configured in it.
+5. Tell Snoopy your name again, say "new conversation", and repeat the name
+   question. Confirm that ordinary conversation and playback still work afterward.
+6. Try silence or unclear speech: no empty LLM turn should be sent.
+7. Say "Goodbye Snoopy" and verify a spoken farewell and clean exit.
+8. In separate runs, press Ctrl+C during listening, an LLM request, and playback.
+9. With deliberately invalid local LLM configuration, verify safe errors and
    continued listening. Restore valid settings afterward.
-8. Check a TTS/device failure leaves the reply on-screen and permits another turn.
+10. Check a TTS/device failure leaves the reply on-screen and permits another turn.
 
 Automated tests use fake Speech/model services and a fake HTTP transport for the
 **real official SDK**. They require no credentials, network, microphone or
 speakers. They verify configuration, Azure request shape, error handling, bounded
-history, sequential multi-turn orchestration, exits, recovery and cancellation.
+history, non-mutating snapshots, serialized clearing, reset commands, sequential
+multi-turn orchestration, exits, recovery and cancellation.
 They do **not** prove live Azure connectivity, microphone capture or audible playback.
 
 ## Architecture
@@ -318,7 +345,10 @@ src/Snoopy.Voice.Console/
     AzureOpenAILanguageModelClient.cs
     LanguageModelException.cs      Sanitized failure categories
     IConversationService.cs
-    ConversationService.cs         Bounded in-memory history
+    ConversationService.cs         Reply/clear orchestration and system prompt
+    IConversationHistory.cs        History contract and complete-turn model
+    InMemoryConversationHistory.cs Bounded, synchronized session storage
+    ConversationCommands.cs        Reset commands and shared word normalization
     ExitCommands.cs
 tests/Snoopy.Voice.Console.Tests/   Original Speech tests + conversation/SDK tests
 ```

@@ -10,6 +10,7 @@ public sealed class VoiceConversationApplication(
     TextWriter output)
 {
     public const string Goodbye = "Goodbye! Talk to you later.";
+    public const string ConversationReset = "Sure. I've started a new conversation.";
     public const string ModelUnavailable =
         "I'm having trouble reaching my language model right now. Please try again.";
     private static readonly TimeSpan RecognitionRetryDelay = TimeSpan.FromSeconds(1);
@@ -22,6 +23,7 @@ public sealed class VoiceConversationApplication(
         output.WriteLine("[INFO] Speech: configured. LLM: configured. Connections are checked when used.");
         output.WriteLine("Speak naturally in English (India). Pause at the end of each turn.");
         output.WriteLine("Say exit, quit, goodbye or stop (optionally with Snoopy) to finish.");
+        output.WriteLine("Say reset conversation or new conversation to start fresh.");
         output.WriteLine("Ctrl+C cancels the current operation and exits.");
 
         while (true)
@@ -61,6 +63,12 @@ public sealed class VoiceConversationApplication(
             {
                 await DisplayAndSpeakAsync(Goodbye, cancellationToken);
                 return;
+            }
+            if (ConversationCommands.IsReset(userText))
+            {
+                await conversation.ClearAsync(cancellationToken);
+                await DisplayAndSpeakAsync(ConversationReset, cancellationToken);
+                continue;
             }
 
             string response;

@@ -22,6 +22,7 @@ internal static class ApplicationServices
             services.AddSingleton(configuration.AzureOpenAI);
             services.AddSingleton(configuration.Snoopy);
             services.AddSingleton<ILanguageModelClient, AzureOpenAILanguageModelClient>();
+            services.AddSingleton<IConversationHistory, InMemoryConversationHistory>();
             services.AddSingleton<IConversationService, ConversationService>();
             services.AddSingleton<VoiceConversationApplication>();
         }
