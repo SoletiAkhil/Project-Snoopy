@@ -1,0 +1,55 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build Snoopy",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"build",
+				"Snoopy.sln"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "run Snoopy",
+			"dependsOn": "build Snoopy",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"run",
+				"--project",
+				"src\\Snoopy.Voice.Console\\Snoopy.Voice.Console.csproj",
+				"--no-build"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "run Snoopy Speech tests",
+			"dependsOn": "build Snoopy",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"run",
+				"--project",
+				"src\\Snoopy.Voice.Console\\Snoopy.Voice.Console.csproj",
+				"--no-build",
+				"--",
+				"--speech-tests"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": []
+		}
+	]
+}
