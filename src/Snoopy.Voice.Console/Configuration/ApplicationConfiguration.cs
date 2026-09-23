@@ -8,54 +8,50 @@ public sealed class ApplicationConfiguration
     public required SpeechOptions Speech { get; init; }
     public AzureOpenAIOptions? AzureOpenAI { get; init; }
     public SnoopyOptions Snoopy { get; init; } = new();
+    public DatabaseOptions? Database { get; init; }
 
     public static ApplicationConfiguration Load(bool speechTests) =>
-        Load(speechTests, Directory.GetCurrentDirectory(), Environment.GetEnvironmentVariable,
-            builder => builder.AddUserSecrets<ApplicationConfiguration>(optional: true, reloadOnChange: false));
+        Load(speechTests, Directory.GetCurrentDirectory());
 
-    internal static ApplicationConfiguration Load(
-        bool speechTests,
-        string basePath,
-        Func<string, string?> environment,
-        Action<IConfigurationBuilder> addUserSecrets)
+    internal static ApplicationConfiguration Load(bool speechTests, string basePath) =>
+        LoadSettings(basePath, configuration => FromConfiguration(configuration, speechTests));
+
+    public static DatabaseOptions LoadDatabaseOptions() =>
+        LoadDatabaseOptions(Directory.GetCurrentDirectory());
+
+    internal static DatabaseOptions LoadDatabaseOptions(string basePath) =>
+        LoadSettings(basePath, DatabaseOptions.FromConfiguration);
+
+    private static T LoadSettings<T>(string basePath, Func<IConfiguration, T> read)
     {
         using var configuration = new ConfigurationManager();
         try
         {
             configuration.SetBasePath(basePath)
-                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false);
-            addUserSecrets(configuration);
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
         }
         catch (Exception exception) when (
             exception is IOException or InvalidDataException or FormatException or UnauthorizedAccessException)
         {
             throw new ArgumentException(
-                "Could not read appsettings.json or .NET User Secrets (secrets.json). " +
-                "Check JSON syntax and file permissions. " +
+                "Could not read appsettings.json in the working directory. " +
+                "Create your local copy from appsettings.example.json and check JSON syntax and file permissions. " +
                 "Configuration contents are not displayed because they may contain secrets.");
         }
 
-        return FromSources(configuration, environment, speechTests);
+        return read(configuration);
     }
 
-    internal static ApplicationConfiguration FromSources(
-        IConfiguration configuration, Func<string, string?> environment, bool speechTests = false)
+    internal static ApplicationConfiguration FromConfiguration(
+        IConfiguration configuration, bool speechTests = false)
     {
-        string? Read(string variable, string setting) => environment(variable) ?? configuration[setting];
-
-        var speech = SpeechOptions.FromEnvironment(name => name switch
-        {
-            "SNOOPY_SPEECH_KEY" => Read(name, "AzureSpeech:ApiKey"),
-            "SNOOPY_SPEECH_REGION" => Read(name, "AzureSpeech:Region"),
-            "SNOOPY_SPEECH_VOICE" => Read(name, "AzureSpeech:VoiceName"),
-            _ => null
-        });
+        var speech = SpeechOptions.FromConfiguration(configuration);
         if (speechTests)
         {
             return new ApplicationConfiguration { Speech = speech };
         }
 
-        var roleText = Read("AZURE_OPENAI_INSTRUCTION_ROLE", "AzureOpenAI:InstructionRole") ?? "System";
+        var roleText = configuration["AzureOpenAI:InstructionRole"] ?? "System";
         if (!Enum.TryParse<InstructionRole>(roleText, ignoreCase: true, out var role) || !Enum.IsDefined(role))
         {
             throw new ArgumentException("AzureOpenAI InstructionRole must be System or Developer.");
@@ -63,14 +59,14 @@ public sealed class ApplicationConfiguration
 
         var model = new AzureOpenAIOptions
         {
-            Endpoint = Read("AZURE_OPENAI_ENDPOINT", "AzureOpenAI:Endpoint")?.Trim() ?? string.Empty,
-            ApiKey = Read("AZURE_OPENAI_API_KEY", "AzureOpenAI:ApiKey")?.Trim() ?? string.Empty,
-            DeploymentName = Read("AZURE_OPENAI_DEPLOYMENT", "AzureOpenAI:DeploymentName")?.Trim() ?? string.Empty,
+            Endpoint = configuration["AzureOpenAI:Endpoint"]?.Trim() ?? string.Empty,
+            ApiKey = configuration["AzureOpenAI:ApiKey"]?.Trim() ?? string.Empty,
+            DeploymentName = configuration["AzureOpenAI:DeploymentName"]?.Trim() ?? string.Empty,
             RequestTimeoutSeconds = ReadInteger(
-                Read("AZURE_OPENAI_TIMEOUT_SECONDS", "AzureOpenAI:RequestTimeoutSeconds"),
+                configuration["AzureOpenAI:RequestTimeoutSeconds"],
                 45, "AzureOpenAI RequestTimeoutSeconds"),
             MaxOutputTokens = ReadInteger(
-                Read("AZURE_OPENAI_MAX_OUTPUT_TOKENS", "AzureOpenAI:MaxOutputTokens"),
+                configuration["AzureOpenAI:MaxOutputTokens"],
                 1024, "AzureOpenAI MaxOutputTokens"),
             InstructionRole = role
         };
@@ -78,17 +74,29 @@ public sealed class ApplicationConfiguration
 
         var snoopy = new SnoopyOptions
         {
-            SystemPrompt = Read("SNOOPY_SYSTEM_PROMPT", "Snoopy:SystemPrompt") ?? SnoopyOptions.DefaultSystemPrompt,
+            SystemPrompt = configuration["Snoopy:SystemPrompt"] ?? SnoopyOptions.DefaultSystemPrompt,
             MaxHistoryTurns = ReadInteger(
-                Read("SNOOPY_MAX_HISTORY_TURNS", "Snoopy:MaxHistoryTurns"), 12, "Snoopy MaxHistoryTurns"),
+                configuration["Snoopy:MaxHistoryTurns"], 12, "Snoopy MaxHistoryTurns"),
             MaxHistoryCharacters = ReadInteger(
-                Read("SNOOPY_MAX_HISTORY_CHARACTERS", "Snoopy:MaxHistoryCharacters"), 24000,
+                configuration["Snoopy:MaxHistoryCharacters"], 24000,
                 "Snoopy MaxHistoryCharacters"),
             MaxInputCharacters = ReadInteger(
-                Read("SNOOPY_MAX_INPUT_CHARACTERS", "Snoopy:MaxInputCharacters"), 4000, "Snoopy MaxInputCharacters")
+                configuration["Snoopy:MaxInputCharacters"], 4000, "Snoopy MaxInputCharacters"),
+            EnableMemoryContext = ReadBoolean(
+                configuration["Snoopy:EnableMemoryContext"], false, "Snoopy EnableMemoryContext"),
+            MaxMemoryContextItems = ReadInteger(
+                configuration["Snoopy:MaxMemoryContextItems"], 20, "Snoopy MaxMemoryContextItems"),
+            MaxMemoryContextCharacters = ReadInteger(
+                configuration["Snoopy:MaxMemoryContextCharacters"], 4000, "Snoopy MaxMemoryContextCharacters")
         };
         snoopy.Validate();
-        return new ApplicationConfiguration { Speech = speech, AzureOpenAI = model, Snoopy = snoopy };
+        return new ApplicationConfiguration
+        {
+            Speech = speech,
+            AzureOpenAI = model,
+            Snoopy = snoopy,
+            Database = DatabaseOptions.FromConfiguration(configuration)
+        };
     }
 
     private static int ReadInteger(string? value, int defaultValue, string setting)
@@ -100,6 +108,19 @@ public sealed class ApplicationConfiguration
         if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result))
         {
             throw new ArgumentException($"{setting} must be a whole number.");
+        }
+        return result;
+    }
+
+    private static bool ReadBoolean(string? value, bool defaultValue, string setting)
+    {
+        if (value is null)
+        {
+            return defaultValue;
+        }
+        if (!bool.TryParse(value, out var result))
+        {
+            throw new ArgumentException($"{setting} must be true or false.");
         }
         return result;
     }

@@ -12,6 +12,9 @@ public sealed class SnoopyOptions
     public int MaxHistoryTurns { get; init; } = 12;
     public int MaxHistoryCharacters { get; init; } = 24000;
     public int MaxInputCharacters { get; init; } = 4000;
+    public bool EnableMemoryContext { get; init; }
+    public int MaxMemoryContextItems { get; init; } = 20;
+    public int MaxMemoryContextCharacters { get; init; } = 4000;
 
     public void Validate()
     {
@@ -32,6 +35,21 @@ public sealed class SnoopyOptions
             throw new ArgumentException(
                 "Snoopy MaxInputCharacters must be positive and fit alongside SystemPrompt " +
                 "within MaxHistoryCharacters.");
+        }
+        if (MaxMemoryContextItems is < 1 or > 100)
+        {
+            throw new ArgumentException("Snoopy MaxMemoryContextItems must be between 1 and 100.");
+        }
+        if (MaxMemoryContextCharacters is < 512 or > 32000)
+        {
+            throw new ArgumentException("Snoopy MaxMemoryContextCharacters must be between 512 and 32000.");
+        }
+        if (EnableMemoryContext &&
+            MaxInputCharacters > MaxHistoryCharacters - SystemPrompt.Length - MaxMemoryContextCharacters)
+        {
+            throw new ArgumentException(
+                "Snoopy MaxMemoryContextCharacters must fit alongside SystemPrompt and MaxInputCharacters " +
+                "within MaxHistoryCharacters when EnableMemoryContext is true.");
         }
     }
 }

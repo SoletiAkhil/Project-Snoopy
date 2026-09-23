@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+
 namespace Snoopy.Voice.Console.Configuration;
 
 public sealed class SpeechOptions
@@ -6,23 +8,19 @@ public sealed class SpeechOptions
     public const string DefaultVoiceName = "en-IN-NeerjaNeural";
     public const string MissingConfigurationMessage =
         "Azure Speech configuration is missing.\n\n" +
-        "Set AzureSpeech:ApiKey and AzureSpeech:Region in .NET User Secrets (secrets.json) " +
-        "or appsettings.json.\n\n" +
-        "Environment alternatives:\nSNOOPY_SPEECH_KEY\nSNOOPY_SPEECH_REGION";
+        "Set AzureSpeech:ApiKey and AzureSpeech:Region in the local appsettings.json.";
 
     public string SubscriptionKey { get; init; } = string.Empty;
     public string Region { get; init; } = DefaultRegion;
     public string VoiceName { get; init; } = DefaultVoiceName;
 
-    public static SpeechOptions FromEnvironment(Func<string, string?>? readVariable = null)
+    public static SpeechOptions FromConfiguration(IConfiguration configuration)
     {
-        readVariable ??= Environment.GetEnvironmentVariable;
-        var voice = readVariable("SNOOPY_SPEECH_VOICE");
+        var voice = configuration["AzureSpeech:VoiceName"];
         var options = new SpeechOptions
         {
-            SubscriptionKey = readVariable("SNOOPY_SPEECH_KEY")?.Trim() ?? string.Empty,
-            // Environment configuration deliberately requires an explicit resource region.
-            Region = readVariable("SNOOPY_SPEECH_REGION")?.Trim() ?? string.Empty,
+            SubscriptionKey = configuration["AzureSpeech:ApiKey"]?.Trim() ?? string.Empty,
+            Region = configuration["AzureSpeech:Region"]?.Trim() ?? string.Empty,
             VoiceName = string.IsNullOrWhiteSpace(voice) ? DefaultVoiceName : voice.Trim()
         };
         options.Validate();

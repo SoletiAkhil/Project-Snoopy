@@ -1,5 +1,7 @@
+using Microsoft.Extensions.DependencyInjection;
 using Snoopy.Voice.Console.AI;
 using Snoopy.Voice.Console.Configuration;
+using Snoopy.Voice.Console.Memories;
 
 namespace Snoopy.Voice.Console.Tests;
 
@@ -80,6 +82,55 @@ public sealed class ConversationServiceTests
             new(ConversationRole.Assistant, "Answer."),
             new(ConversationRole.User, "Continue the first session.")
         ], model.Requests[2]);
+    }
+
+    [Fact]
+    public async Task MemoriesAreNotExtractedAndContextRemainsUnchangedWhenMemoryContextIsDisabled()
+    {
+        var options = Options();
+        var model = new FakeLanguageModel();
+        var configuration = new ApplicationConfiguration
+        {
+            Speech = new SpeechOptions { SubscriptionKey = "speech-not-a-real-key", Region = "centralindia" },
+            AzureOpenAI = new AzureOpenAIOptions
+            {
+                Endpoint = "https://unit-test.openai.azure.com/",
+                ApiKey = "model-not-a-real-key",
+                DeploymentName = "test-deployment"
+            },
+            Snoopy = options
+        };
+        using var provider = ApplicationServices.CreateProvider(configuration, new StringWriter(), new InMemoryMemoryStore());
+        var store = provider.GetRequiredService<IMemoryStore>();
+        var service = ActivatorUtilities.CreateInstance<ConversationService>(provider, model);
+        const string firstInput = "Remember that I prefer .NET for backend development.";
+
+        await service.ReplyAsync(firstInput);
+
+        Assert.Empty(await store.GetAllAsync());
+        var memory = new Memory("Prefer tea.", MemoryCategory.Preference, 5);
+        await store.AddAsync(memory);
+        await service.ReplyAsync("What did I just tell you?");
+
+        Assert.Equal<ConversationMessage>(
+        [
+            new(ConversationRole.System, options.SystemPrompt),
+            new(ConversationRole.User, firstInput),
+            new(ConversationRole.Assistant, "Answer."),
+            new(ConversationRole.User, "What did I just tell you?")
+        ], model.Requests[1]);
+        Assert.Equal(memory, Assert.Single(await store.GetAllAsync()));
+
+        await service.ClearAsync();
+        await service.ReplyAsync("A fresh conversation.");
+
+        Assert.Equal(3, model.Requests.Count);
+        Assert.Equal<ConversationMessage>(
+        [
+            new(ConversationRole.System, options.SystemPrompt),
+            new(ConversationRole.User, "A fresh conversation.")
+        ], model.Requests[2]);
+        Assert.Equal(memory, Assert.Single(await store.GetAllAsync()));
     }
 
     [Theory]
@@ -455,9 +506,11 @@ public sealed class ConversationServiceTests
     {
         var options = Options();
         var history = new InMemoryConversationHistory(options);
-        Assert.Throws<ArgumentNullException>(() => new ConversationService(null!, options, history));
-        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), null!, history));
-        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), options, null!));
+        var memoryContext = CreateMemoryContext(options);
+        Assert.Throws<ArgumentNullException>(() => new ConversationService(null!, options, history, memoryContext));
+        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), null!, history, memoryContext));
+        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), options, null!, memoryContext));
+        Assert.Throws<ArgumentNullException>(() => new ConversationService(new FakeLanguageModel(), options, history, null!));
     }
 
     [Fact]
@@ -466,7 +519,8 @@ public sealed class ConversationServiceTests
         var options = Options(systemPrompt: new string('s', 100), maxInputCharacters: 925);
 
         Assert.Throws<ArgumentException>(() =>
-            new ConversationService(new FakeLanguageModel(), options, new InMemoryConversationHistory(Options())));
+            new ConversationService(new FakeLanguageModel(), options, new InMemoryConversationHistory(Options()),
+                CreateMemoryContext(Options())));
     }
 
     [Fact]
@@ -553,7 +607,7 @@ public sealed class ConversationServiceTests
         var options = Options();
         var history = new RecordingHistory();
         var model = new FakeLanguageModel();
-        var service = new ConversationService(model, options, history);
+        var service = new ConversationService(model, options, history, CreateMemoryContext(options));
         using var cancellation = new CancellationTokenSource();
 
         await service.ReplyAsync(" next ", cancellation.Token);
@@ -575,7 +629,10 @@ public sealed class ConversationServiceTests
     }
 
     private static ConversationService CreateService(ILanguageModelClient model, SnoopyOptions options) =>
-        new(model, options, new InMemoryConversationHistory(options));
+        new(model, options, new InMemoryConversationHistory(options), CreateMemoryContext(options));
+
+    private static MemoryContextProvider CreateMemoryContext(SnoopyOptions options) =>
+        new(new MemoryService(new InMemoryMemoryStore()), options, TextWriter.Null);
 
     private static SnoopyOptions Options(
         int maxHistoryTurns = 12, int maxInputCharacters = 924, string systemPrompt = "You are Snoopy.") => new()

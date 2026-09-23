@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Snoopy.Voice.Console.Configuration;
 
 namespace Snoopy.Voice.Console.Tests;
@@ -76,11 +77,11 @@ public sealed class SpeechOptionsTests
 
     private static SpeechOptions Load(
         string? key = "test-placeholder", string? region = "centralindia", string? voice = null) =>
-        SpeechOptions.FromEnvironment(name => name switch
-        {
-            "SNOOPY_SPEECH_KEY" => key,
-            "SNOOPY_SPEECH_REGION" => region,
-            "SNOOPY_SPEECH_VOICE" => voice,
-            _ => throw new InvalidOperationException("Unexpected environment variable requested.")
-        });
+        SpeechOptions.FromConfiguration(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["AzureSpeech:ApiKey"] = key,
+                ["AzureSpeech:Region"] = region,
+                ["AzureSpeech:VoiceName"] = voice
+            }).Build());
 }

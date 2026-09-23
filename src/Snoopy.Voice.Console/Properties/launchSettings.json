@@ -1,0 +1,18 @@
+{
+  "profiles": {
+    "Snoopy": {
+      "commandName": "Project",
+      "workingDirectory": "..\\.."
+    },
+    "Snoopy - Migrate Database": {
+      "commandName": "Project",
+      "commandLineArgs": "--migrate-database",
+      "workingDirectory": "..\\.."
+    },
+    "Snoopy - Speech Tests": {
+      "commandName": "Project",
+      "commandLineArgs": "--speech-tests",
+      "workingDirectory": "..\\.."
+    }
+  }
+}

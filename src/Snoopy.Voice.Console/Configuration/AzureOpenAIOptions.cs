@@ -23,9 +23,7 @@ public sealed class AzureOpenAIOptions
         {
             throw new ArgumentException(
                 "Azure OpenAI configuration is missing.\n\nSet AzureOpenAI:Endpoint, AzureOpenAI:ApiKey " +
-                "and AzureOpenAI:DeploymentName in .NET User Secrets (secrets.json) or appsettings.json.\n\n" +
-                "Environment alternatives:\n" +
-                "AZURE_OPENAI_ENDPOINT\nAZURE_OPENAI_API_KEY\nAZURE_OPENAI_DEPLOYMENT\n" +
+                "and AzureOpenAI:DeploymentName in the local appsettings.json.\n\n" +
                 "Use --speech-tests to run the independent Speech tests without an LLM.");
         }
 
